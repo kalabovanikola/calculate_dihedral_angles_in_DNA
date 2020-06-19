@@ -40,7 +40,6 @@ NCCN_torsion_def = {
 """
 
 
-# TODO: možná smazat Atom a nechat jen Coords - zatím ne, mohlo by se hodit
 # TODO: neměly by být steps u sekvencí?
 
 class Coords:
@@ -81,10 +80,10 @@ class Angles:
             self.gamma = calculate_dihedral_angles(seq1, seq2, [], ["O5'", "C5'", "C4'", "C3'"])
             self.delta2 = calculate_dihedral_angles(seq1, seq2, [], ["C5'", "C4'", "C3'", "O3'"])
             self.chi = calculate_dihedral_angles(seq1, seq2, ["O4'", "C1'", "N9", "C4"], []) \
-                if seq1.pur_or_pyr == "purine" \
+                if seq1.base_type == "purine" \
                 else calculate_dihedral_angles(seq1, seq2, ["O4'", "C1'", "N1", "C2"], [])
             self.chi2 = calculate_dihedral_angles(seq1, seq2, [], ["O4'", "C1'", "N9", "C4"]) \
-                if seq2.pur_or_pyr == "purine" \
+                if seq2.base_type == "purine" \
                 else calculate_dihedral_angles(seq1, seq2, [], ["O4'", "C1'", "N1", "C2"])
             self.NCCN_tors = calculate_NCCN_torsion(seq1, seq2)
 
@@ -93,7 +92,7 @@ class Sequence:
     def __init__(self):
         self.atoms: {str: Atom} = {}
         self.is_valid = True
-        self.pur_or_pyr = None
+        self.base_type = None
 
 
 class WrongNumberOfArgumentsException(Exception):
@@ -113,13 +112,13 @@ def calculate_NCCN_torsion(seq1, seq2):
     :param seq2: dict structure of the second sequence
     :return: a dihedral angle
     """
-    if seq1.pur_or_pyr == "purine" and seq2.pur_or_pyr == "purine":
+    if seq1.base_type == "purine" and seq2.base_type == "purine":
         return calculate_dihedral_angles(seq1, seq2, ["N9", "C1'"], ["C1'", "N9"])
-    elif seq1.pur_or_pyr == "pyrimidine" and seq2.pur_or_pyr == "purine":
+    elif seq1.base_type == "pyrimidine" and seq2.base_type == "purine":
         return calculate_dihedral_angles(seq1, seq2, ["N1", "C1'"], ["C1'", "N9"])
-    elif seq1.pur_or_pyr == "purine" and seq2.pur_or_pyr == "pyrimidine":
+    elif seq1.base_type == "purine" and seq2.base_type == "pyrimidine":
         return calculate_dihedral_angles(seq1, seq2, ["N9", "C1'"], ["C1'", "N1"])
-    elif seq1.pur_or_pyr == "pyrimidine" and seq2.pur_or_pyr == "pyrimidine":
+    elif seq1.base_type == "pyrimidine" and seq2.base_type == "pyrimidine":
         return calculate_dihedral_angles(seq1, seq2, ["N1", "C1'"], ["C1'", "N1"])
 
 
@@ -155,7 +154,6 @@ def remove_quotation_marks(atom):
     return (atom[1:-1]) if '"' in atom else atom
 
 
-# TODO: Možná předělat prázdné Angles na None... a nebo to vyřešit nějak chytřeji
 def calculate_angles(entity: Entity):
     """
     calculates angles if all needed atoms are present in the sequence, else adds an empty step
@@ -170,43 +168,75 @@ def calculate_angles(entity: Entity):
 
 
 def parse_to_entities(table):
-    table_of_entities = []
+    """
+    takes the whole structure and parses it to entities according to cif distribution
+    :param table: gemmi_table with all necessary information
+    :return: array of entities
+    """
+    array_of_entities = []
     numpy_table = np.array(table)
-    m,n = 0,0
+    m, n = 0, 0
     for row in numpy_table:
         if int(row[0]) != n:
-            table_of_entities.append(Entity())
+            array_of_entities.append(Entity())
             n = int(row[0])
         if int(row[1]) != m:
-            table_of_entities[-1].sequences.append(Sequence())
+            array_of_entities[-1].sequences.append(Sequence())
             m = int(row[1])
-        table_of_entities[-1].sequences[-1].atoms.update({remove_quotation_marks(row[2]): Atom(row)})
-    return table_of_entities
+        array_of_entities[-1].sequences[-1].atoms.update({remove_quotation_marks(row[2]): Atom(row)})
+    return array_of_entities
 
 
 def make_gemmi_position_format_from_coords(coords):
     return gemmi.Position(float(coords.x), float(coords.y), float(coords.z))
 
 
-def is_valid(array_of_entities):
+def operate_cif_file():
+    doc = cif.read_file("cif_example.cif")
+    block = doc[0]
+    return block.find(
+        ["_atom_site.label_entity_id", "_atom_site.label_seq_id", "_atom_site.label_atom_id", "_atom_site.Cartn_x",
+         "_atom_site.Cartn_y", "_atom_site.Cartn_z"])
+
+
+def check_if_sequence_is_valid_and_add_base_information(array_of_entities):
+    """
+    the sequence is valid only if it contains all of the atoms given in variable "must_have". The function goes through
+    all sequences in all entities and checks if sequences are valid. In addition to that it classifies the base as
+    a purine or a pyrimidine.
+    :param array_of_entities: all entities in given structure
+    :return: is_valid and base_type property of a sequence
+    """
     must_have = ["O3'", "P", "O5'", "C5'", "C4'", "C3'", "C1'", "O4'", "C2'"]
     for entity in array_of_entities:
         for sequence in entity.sequences:
-            allatoms = [x for x in sequence.atoms.keys()]
+            all_atoms = [x for x in sequence.atoms.keys()]
             for atom in must_have:
-                if atom not in allatoms:
+                if atom not in all_atoms:
                     sequence.is_valid = False
-            if "N9" not in allatoms and "N1" not in allatoms:
+            if "N9" not in all_atoms and "N1" not in all_atoms:
                 sequence.is_valid = False
-            if "N9" in allatoms and "N1" in allatoms:
-                sequence.pur_or_pyr = "purine"
-            elif "N1" in allatoms:
-                sequence.pur_or_pyr = "pyrimidine"
+            if "N9" in all_atoms and "N1" in all_atoms:
+                sequence.base_type = "purine"
+            elif "N1" in all_atoms:
+                sequence.base_type = "pyrimidine"
             else:
-                sequence.pur_or_pyr = "incomplete sequence"
+                sequence.base_type = "incomplete sequence"
 
+
+def split_into_entities_and_calculate_parameters(table):
+    entities_array = parse_to_entities(table)
+    check_if_sequence_is_valid_and_add_base_information(entities_array)
+    for _entity in entities_array:
+        calculate_angles(_entity)
+    return entities_array
 
 def write_it_out(array_of_entities):
+    """
+    just a testing function
+    :param array_of_entities:
+    :return:
+    """
     a = 0
     for entity in array_of_entities:
         print("new entity")
@@ -215,7 +245,7 @@ def write_it_out(array_of_entities):
         for sequence in entity.sequences:
             print("new_sequence")
             print(f'{a}.{b}')
-            print(sequence.pur_or_pyr)
+            print(sequence.base_type)
             print(sequence.is_valid)
             b += 1
             for atom in sequence.atoms.values():
@@ -223,22 +253,11 @@ def write_it_out(array_of_entities):
                 print(atom.coords.x)
 
 
-doc = cif.read_file("cif_example.cif")
-block = doc[0]
-gemmi_table = block.find(
-    ["atom_site.labelentity_id", "atom_site.label_seq_id", "atom_site.labelatom_id", "atom_site.Cartn_x",
-     "atom_site.Cartn_y", "atom_site.Cartn_z"])
-
+gemmi_table = operate_cif_file()
 print(np.array(gemmi_table))
-entities_array = parse_to_entities(gemmi_table)
-is_valid(entities_array)
-write_it_out(entities_array)
-print(type(make_gemmi_position_format_from_coords(entities_array[0].sequences[1].atoms["P"].coords)))
-for _entity in entities_array:
-    calculate_angles(_entity)
-for _entity in entities_array:
+_entities_array = split_into_entities_and_calculate_parameters(gemmi_table)
+write_it_out(_entities_array)
+for _entity in _entities_array:
     for _atom in _entity.steps:
         if _atom.has_angles:
             print(_atom.chi)
-        else:
-            pass
