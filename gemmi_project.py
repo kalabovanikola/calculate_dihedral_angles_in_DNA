@@ -1,12 +1,13 @@
-#!/bin/python3
+#!/usr/bin/python3
+import sys
 import math
 from math import degrees
 import gemmi
 from gemmi import cif
 import numpy as np
-
+import csv
 """
-must_have = ["O3'", "P", "O5'", "C5'", "C4'", "C3'", "C1'", "N9" nebo "N1", "O4'", "C2'"]
+must_have = ["O3'", "P", "O5'", "C5'", "C4'", "C3'", "C1'", "N9" or "N1", "O4'", "C2'"]
 # which atoms take place in the torsion angle
 torsions_def = {
     "alpha": ["O3'", "P", "O5'", "C5'"],
@@ -44,14 +45,14 @@ NCCN_torsion_def = {
 
 class Coords:
     def __init__(self, row):
-        self.x = row[3]
-        self.y = row[4]
-        self.z = row[5]
+        self.x = row[4]
+        self.y = row[5]
+        self.z = row[6]
 
 
 class Atom:
     def __init__(self, row):
-        self.atom_name = remove_quotation_marks(row[2])
+        self.atom_name = remove_quotation_marks(row[3])
         self.coords = Coords(row)
 
 
@@ -136,11 +137,13 @@ def calculate_dihedral_angles(seq1: Sequence, seq2: Sequence, atom_names_seq1: [
     :param atom_names_seq2: the atoms that are needed from the second sequence
     :return: an dihedral angle
     """
+
     points = [make_gemmi_position_format_from_coords(seq1.atoms[atom_name].coords) for atom_name in atom_names_seq1] + \
              [make_gemmi_position_format_from_coords(seq2.atoms[atom_name].coords) for atom_name in atom_names_seq2]
     if len(points) == 4:
         result = degrees(gemmi.calculate_dihedral(points[0], points[1], points[2], points[3]))
-        return result
+
+        return round(result,1) if result >= 0 else round(360 + result,1)
     else:
         raise WrongNumberOfArgumentsException(len(points))
 
@@ -161,8 +164,8 @@ def calculate_angles(entity: Entity):
     :return: an array of steps for the entity.
     """
     for i in range(len(entity.sequences) - 1):
-        if entity.sequences[i - 1].is_valid and entity.sequences[i].is_valid:
-            entity.steps.append(Angles(entity.sequences[i - 1], entity.sequences[i]))
+        if entity.sequences[i].is_valid and entity.sequences[i+1].is_valid:
+            entity.steps.append(Angles(entity.sequences[i], entity.sequences[i+1]))
         else:
             entity.steps.append(Angles())
 
@@ -175,15 +178,17 @@ def parse_to_entities(table):
     """
     array_of_entities = []
     numpy_table = np.array(table)
+    print(numpy_table)
     m, n = 0, 0
     for row in numpy_table:
-        if int(row[0]) != n:
-            array_of_entities.append(Entity())
-            n = int(row[0])
-        if int(row[1]) != m:
-            array_of_entities[-1].sequences.append(Sequence())
-            m = int(row[1])
-        array_of_entities[-1].sequences[-1].atoms.update({remove_quotation_marks(row[2]): Atom(row)})
+        if row[0] == "ATOM":
+            if int(row[1]) != n:
+                array_of_entities.append(Entity())
+                n = int(row[1])
+            if int(row[2]) != m:
+                array_of_entities[-1].sequences.append(Sequence())
+                m = int(row[2])
+            array_of_entities[-1].sequences[-1].atoms.update({remove_quotation_marks(row[3]): Atom(row)})
     return array_of_entities
 
 
@@ -192,11 +197,11 @@ def make_gemmi_position_format_from_coords(coords):
 
 
 def operate_cif_file():
-    doc = cif.read_file("cif_example.cif")
+    doc = cif.read(sys.argv[1])
     block = doc[0]
     return block.find(
-        ["_atom_site.label_entity_id", "_atom_site.label_seq_id", "_atom_site.label_atom_id", "_atom_site.Cartn_x",
-         "_atom_site.Cartn_y", "_atom_site.Cartn_z"])
+        ["_atom_site.group_PDB", "_atom_site.label_entity_id", "_atom_site.label_seq_id", "_atom_site.label_atom_id", "_atom_site.Cartn_x",
+         "_atom_site.Cartn_y", "_atom_site.Cartn_z", "_atom_site.label_alt_id"])
 
 
 def check_if_sequence_is_valid_and_add_base_information(array_of_entities):
@@ -208,8 +213,13 @@ def check_if_sequence_is_valid_and_add_base_information(array_of_entities):
     :return: is_valid and base_type property of a sequence
     """
     must_have = ["O3'", "P", "O5'", "C5'", "C4'", "C3'", "C1'", "O4'", "C2'"]
+
     for entity in array_of_entities:
-        for sequence in entity.sequences:
+        all_atoms = [x for x in entity.sequences[0].atoms.keys()]
+        for atom in must_have:
+            if atom not in all_atoms and atom != "P":
+                entity.sequences[0].is_valid = False
+        for sequence in entity.sequences[1:]:
             all_atoms = [x for x in sequence.atoms.keys()]
             for atom in must_have:
                 if atom not in all_atoms:
@@ -224,12 +234,13 @@ def check_if_sequence_is_valid_and_add_base_information(array_of_entities):
                 sequence.base_type = "incomplete sequence"
 
 
-def split_into_entities_and_calculate_parameters(table):
-    entities_array = parse_to_entities(table)
+def split_into_entities_and_calculate_parameters():
+    entities_array = parse_to_entities(operate_cif_file())
     check_if_sequence_is_valid_and_add_base_information(entities_array)
-    for _entity in entities_array:
-        calculate_angles(_entity)
+    for entity in entities_array:
+        calculate_angles(entity)
     return entities_array
+
 
 def write_it_out(array_of_entities):
     """
@@ -253,11 +264,11 @@ def write_it_out(array_of_entities):
                 print(atom.coords.x)
 
 
-gemmi_table = operate_cif_file()
-print(np.array(gemmi_table))
-_entities_array = split_into_entities_and_calculate_parameters(gemmi_table)
-write_it_out(_entities_array)
-for _entity in _entities_array:
-    for _atom in _entity.steps:
-        if _atom.has_angles:
-            print(_atom.chi)
+_entities_array = split_into_entities_and_calculate_parameters()
+#write_it_out(_entities_array)
+with open('csvfile.csv','w', newline='') as file:
+    writer = csv.writer(file, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
+    writer.writerow(["d1", "e1", "z1", "a2", "b2", "g2", "d2", "ch1", "ch2", "NCCN_tors"])
+    for _entity in _entities_array:
+        for _atom in _entity.steps:
+                writer.writerow([_atom.delta, _atom.epsilon, _atom.zeta, _atom.alpha, _atom.beta, _atom.gamma, _atom.delta2, _atom.chi, _atom.chi2, _atom.NCCN_tors])
