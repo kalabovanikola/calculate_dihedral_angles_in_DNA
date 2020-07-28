@@ -6,6 +6,7 @@ import gemmi
 from gemmi import cif
 import numpy as np
 import csv
+print(gemmi.__version__)
 """
 must_have = ["O3'", "P", "O5'", "C5'", "C4'", "C3'", "C1'", "N9" or "N1", "O4'", "C2'"]
 # which atoms take place in the torsion angle
@@ -91,6 +92,11 @@ class Angles:
 
 class Sequence:
     def __init__(self):
+        self.sequence_variants: {str: Sequence_variant} = {}
+
+
+class Sequence_variant:
+    def __init__(self):
         self.atoms: {str: Atom} = {}
         self.is_valid = True
         self.base_type = None
@@ -127,7 +133,8 @@ def make_array_form_coords(coords):
     return [float(coords.x), float(coords.y), float(coords.z)]
 
 
-def calculate_dihedral_angles(seq1: Sequence, seq2: Sequence, atom_names_seq1: [str], atom_names_seq2: [str]):
+def calculate_dihedral_angles(seq1: Sequence_variant, seq2: Sequence_variant, atom_names_seq1: [str],
+                              atom_names_seq2: [str]):
     """
     calculates a dihedral angles of given points from two following sequences.
     The arrays may be empty, but it should be 4 points all together
@@ -143,7 +150,7 @@ def calculate_dihedral_angles(seq1: Sequence, seq2: Sequence, atom_names_seq1: [
     if len(points) == 4:
         result = degrees(gemmi.calculate_dihedral(points[0], points[1], points[2], points[3]))
 
-        return round(result,1) if result >= 0 else round(360 + result,1)
+        return round(result, 1) if result >= 0 else round(360 + result, 1)
     else:
         raise WrongNumberOfArgumentsException(len(points))
 
@@ -164,10 +171,21 @@ def calculate_angles(entity: Entity):
     :return: an array of steps for the entity.
     """
     for i in range(len(entity.sequences) - 1):
-        if entity.sequences[i].is_valid and entity.sequences[i+1].is_valid:
-            entity.steps.append(Angles(entity.sequences[i], entity.sequences[i+1]))
-        else:
-            entity.steps.append(Angles())
+        for sequence_var, sequence_var_object in entity.sequences[i].sequence_variants.items():
+            if sequence_var_object.is_valid:
+                if sequence_var == ".":
+                    for sequence_var2 in entity.sequences[i + 1].sequence_variants.values():
+                        if sequence_var2.is_valid:
+                            entity.steps.append(
+                                Angles(entity.sequences[i].sequence_variants[sequence_var], sequence_var2))
+                else:
+                    if sequence_var in entity.sequences[i + 1].sequence_variants and \
+                            entity.sequences[i + 1].sequence_variants[sequence_var].is_valid:
+                        entity.steps.append(Angles(sequence_var_object,
+                                                   entity.sequences[i + 1].sequence_variants[sequence_var]))
+                    if "." in entity.sequences[i + 1].sequence_variants and entity.sequences[i + 1].sequence_variants[
+                        "."].is_valid:
+                        entity.steps.append(Angles(sequence_var_object,entity.sequences[i + 1].sequence_variants["."]))
 
 
 def parse_to_entities(table):
@@ -188,7 +206,10 @@ def parse_to_entities(table):
             if int(row[2]) != m:
                 array_of_entities[-1].sequences.append(Sequence())
                 m = int(row[2])
-            array_of_entities[-1].sequences[-1].atoms.update({remove_quotation_marks(row[3]): Atom(row)})
+            if row[7] not in array_of_entities[-1].sequences[-1].sequence_variants:
+                array_of_entities[-1].sequences[-1].sequence_variants[row[7]] = Sequence_variant()
+            array_of_entities[-1].sequences[-1].sequence_variants[row[7]].atoms.update(
+            {remove_quotation_marks(row[3]): Atom(row)})
     return array_of_entities
 
 
@@ -200,11 +221,12 @@ def operate_cif_file():
     doc = cif.read(sys.argv[1])
     block = doc[0]
     return block.find(
-        ["_atom_site.group_PDB", "_atom_site.label_entity_id", "_atom_site.label_seq_id", "_atom_site.label_atom_id", "_atom_site.Cartn_x",
+        ["_atom_site.group_PDB", "_atom_site.label_entity_id", "_atom_site.label_seq_id", "_atom_site.label_atom_id",
+         "_atom_site.Cartn_x",
          "_atom_site.Cartn_y", "_atom_site.Cartn_z", "_atom_site.label_alt_id"])
 
 
-def check_if_sequence_is_valid_and_add_base_information(array_of_entities):
+def check_if_sequence_is_valid_and_add_basic_information(array_of_entities):
     """
     the sequence is valid only if it contains all of the atoms given in variable "must_have". The function goes through
     all sequences in all entities and checks if sequences are valid. In addition to that it classifies the base as
@@ -215,28 +237,31 @@ def check_if_sequence_is_valid_and_add_base_information(array_of_entities):
     must_have = ["O3'", "P", "O5'", "C5'", "C4'", "C3'", "C1'", "O4'", "C2'"]
 
     for entity in array_of_entities:
-        all_atoms = [x for x in entity.sequences[0].atoms.keys()]
-        for atom in must_have:
-            if atom not in all_atoms and atom != "P":
-                entity.sequences[0].is_valid = False
-        for sequence in entity.sequences[1:]:
-            all_atoms = [x for x in sequence.atoms.keys()]
+
+        for sequence_var in entity.sequences[0].sequence_variants.values():
+            all_atoms = sequence_var.atoms.keys()
             for atom in must_have:
-                if atom not in all_atoms:
-                    sequence.is_valid = False
-            if "N9" not in all_atoms and "N1" not in all_atoms:
-                sequence.is_valid = False
-            if "N9" in all_atoms and "N1" in all_atoms:
-                sequence.base_type = "purine"
-            elif "N1" in all_atoms:
-                sequence.base_type = "pyrimidine"
-            else:
-                sequence.base_type = "incomplete sequence"
+                if atom not in all_atoms and atom != "P":
+                    sequence_var.is_valid = False
+        for sequence in entity.sequences[1:]:
+            for sequence_var in sequence.sequence_variants.values():
+                all_atoms = [x for x in sequence_var.atoms.keys()]
+                for atom in must_have:
+                    if atom not in all_atoms:
+                        sequence_var.is_valid = False
+                if "N9" not in all_atoms and "N1" not in all_atoms:
+                    sequence_var.is_valid = False
+                if "N9" in all_atoms and "N1" in all_atoms:
+                    sequence_var.base_type = "purine"
+                elif "N1" in all_atoms:
+                    sequence_var.base_type = "pyrimidine"
+                else:
+                    sequence_var.base_type = "incomplete sequence"
 
 
 def split_into_entities_and_calculate_parameters():
     entities_array = parse_to_entities(operate_cif_file())
-    check_if_sequence_is_valid_and_add_base_information(entities_array)
+    check_if_sequence_is_valid_and_add_basic_information(entities_array)
     for entity in entities_array:
         calculate_angles(entity)
     return entities_array
@@ -265,10 +290,12 @@ def write_it_out(array_of_entities):
 
 
 _entities_array = split_into_entities_and_calculate_parameters()
-#write_it_out(_entities_array)
-with open('csvfile.csv','w', newline='') as file:
+# write_it_out(_entities_array)
+with open(sys.argv[1][:-3] + 'csv', 'w', newline='') as file:
     writer = csv.writer(file, delimiter=',', quotechar='|', quoting=csv.QUOTE_MINIMAL)
     writer.writerow(["d1", "e1", "z1", "a2", "b2", "g2", "d2", "ch1", "ch2", "NCCN_tors"])
     for _entity in _entities_array:
         for _atom in _entity.steps:
-                writer.writerow([_atom.delta, _atom.epsilon, _atom.zeta, _atom.alpha, _atom.beta, _atom.gamma, _atom.delta2, _atom.chi, _atom.chi2, _atom.NCCN_tors])
+            writer.writerow(
+                [_atom.delta, _atom.epsilon, _atom.zeta, _atom.alpha, _atom.beta, _atom.gamma, _atom.delta2, _atom.chi,
+                 _atom.chi2, _atom.NCCN_tors])
